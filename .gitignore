@@ -1,0 +1,12 @@
+# Виртуальное окружение
+venv/
+.env
+__pycache__/
+*.pyc
+
+# База данных
+responses.db
+
+# Файлы среды
+.vscode/
+.idea/
