@@ -3,7 +3,6 @@ import sqlite3
 import logging
 import asyncio
 from datetime import datetime
-from flask import Flask, request
 
 import openai
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -17,7 +16,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения из .env (для локальной разработки)
+# Загружаем переменные окружения
 load_dotenv()
 print("Текущая папка:", os.getcwd())
 print("Файлы в папке:", os.listdir('.'))
@@ -41,7 +40,7 @@ openai.api_base = "https://api.deepseek.com"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Вопросы
+# ========== ВОПРОСЫ (как и раньше) ==========
 QUESTIONS = [
     {"type": "options", "text": "Сколько лет вашему ребёнку?",
      "options": ["7–8", "9–10", "11–12", "13–14", "15+"]},
@@ -59,9 +58,6 @@ QUESTIONS = [
 # Хранилище данных пользователя
 user_answers = {}
 allowed_chat = set()
-
-# Глобальная переменная для приложения Telegram
-telegram_app = None
 
 
 def init_db():
@@ -260,66 +256,20 @@ async def get_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Не удалось отправить базу данных.")
 
 
-# ---------- Flask-приложение (для Gunicorn) ----------
-app = Flask(__name__)
-
-
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def webhook():
-    """Обработчик входящих обновлений от Telegram."""
-    # Логируем факт получения запроса
-    logger.info("Получен POST-запрос на webhook")
-    if telegram_app:
-        try:
-            update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-            telegram_app.process_update(update)
-            logger.info("Обновление обработано")
-        except Exception as e:
-            logger.error(f"Ошибка при обработке обновления: {e}")
-            return 'error', 500
-    else:
-        logger.error("telegram_app не инициализирован")
-        return 'service not ready', 503
-    return 'ok', 200
-
-
-@app.route('/')
-def index():
-    return 'Bot is running!', 200
-
-
-# ---------- Инициализация Telegram приложения ----------
-def setup_telegram():
-    global telegram_app
+# ---------- Точка входа ----------
+def main():
     init_db()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("get_my_id", get_my_id))
     application.add_handler(CommandHandler("get_db", get_db))
     application.add_handler(CallbackQueryHandler(quiz_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_handler))
-    telegram_app = application
 
-    # Определяем URL для webhook
-    render_url = os.environ.get('RENDER_EXTERNAL_URL')
-    if not render_url:
-        hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-        if hostname:
-            render_url = f"https://{hostname}"
-    if render_url:
-        webhook_url = f"{render_url}/{BOT_TOKEN}"
-    else:
-        webhook_url = f"https://ваш-домен/{BOT_TOKEN}"  # для локальной отладки
-        logger.warning("RENDER_EXTERNAL_URL и RENDER_EXTERNAL_HOSTNAME не заданы, используется заглушка")
-
-    try:
-        # Создаём новый event loop или используем существующий
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
-        logger.info(f"Webhook установлен на {webhook_url}")
-    except Exception as e:
-        logger.error(f"Ошибка установки webhook: {e}")
+    logger.info("Бот запущен в режиме polling...")
+    application.run_polling()
 
 
-# Запускаем инициализацию при старте приложения (один раз)
-setup_telegram()
+if __name__ == "__main__":
+    main()
