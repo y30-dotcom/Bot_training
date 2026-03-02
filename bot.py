@@ -302,7 +302,9 @@ def setup_telegram():
         logger.warning("RENDER_EXTERNAL_URL и RENDER_EXTERNAL_HOSTNAME не заданы, используется заглушка")
 
     try:
-        application.bot.set_webhook(url=webhook_url)
+        # Создаём новый event loop или используем существующий
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(application.bot.set_webhook(url=webhook_url))
         logger.info(f"Webhook установлен на {webhook_url}")
     except Exception as e:
         logger.error(f"Ошибка установки webhook: {e}")
