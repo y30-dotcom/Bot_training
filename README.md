@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Telegram quiz bot
 
 This repository contains a simple Telegram bot that:
@@ -51,6 +50,4 @@ If you want, I can:
 - Wire the provided Excel file into the repo path you specified.
 - Add a persistent database instead of a CSV.
 - Deploy the bot to a server or a cloud function.
-=======
 # Bot_training
->>>>>>> 6621c230dc9078557739c834c8083e3e68d4f4a4
