@@ -2,7 +2,9 @@ import os
 import sqlite3
 import logging
 import asyncio
+import threading
 from datetime import datetime
+from flask import Flask
 
 import openai
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -40,7 +42,7 @@ openai.api_base = "https://api.deepseek.com"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== ВОПРОСЫ (как и раньше) ==========
+# ========== ВОПРОСЫ ==========
 QUESTIONS = [
     {"type": "options", "text": "Сколько лет вашему ребёнку?",
      "options": ["7–8", "9–10", "11–12", "13–14", "15+"]},
@@ -55,10 +57,12 @@ QUESTIONS = [
     {"type": "text", "text": "Ваш номер телефона для связи (в любом формате)"}
 ]
 
-# Хранилище данных пользователя
+# Хранилище данных пользователя (ответы на опрос)
 user_answers = {}
+# Множество пользователей, допущенных к AI-чату
 allowed_chat = set()
-
+# Словарь для счётчика AI-запросов: user_id -> количество использованных запросов
+ai_usage = {}
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -82,7 +86,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 async def save_response_row(row):
     def _insert(r):
         conn = sqlite3.connect(DB_PATH)
@@ -96,7 +99,6 @@ async def save_response_row(row):
         conn.close()
     await asyncio.get_event_loop().run_in_executor(None, _insert, tuple(row))
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Мы проведём небольшой опрос, чтобы лучше узнать вашего ребёнка.\n"
@@ -104,7 +106,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = [[InlineKeyboardButton("Начать опрос", callback_data="quiz_start")]]
     await update.message.reply_text("Готовы?", reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -132,7 +133,6 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await finish_quiz(query, context, user_id)
 
-
 async def send_question(query, context, user_id):
     ua = user_answers.get(user_id)
     if not ua:
@@ -156,7 +156,6 @@ async def send_question(query, context, user_id):
         else:
             await context.bot.send_message(chat_id=user_id, text=text)
         ua["waiting_for_text"] = True
-
 
 async def finish_quiz(query, context, user_id):
     ua = user_answers[user_id]
@@ -201,14 +200,18 @@ async def finish_quiz(query, context, user_id):
         await context.bot.send_message(chat_id=user.id, text=f"Подарочный файл не найден на сервере (ожидался: {EXCEL_PATH}).")
 
     allowed_chat.add(user.id)
-    await context.bot.send_message(chat_id=user.id, text="Спасибо! Теперь вы можете общаться с ИИ — просто напишите сообщение.")
+    ai_usage[user.id] = 0  # инициализируем счётчик
+    await context.bot.send_message(
+        chat_id=user.id,
+        text="Спасибо! Теперь вы можете общаться с ИИ (до 6 сообщений). Просто напишите что-нибудь."
+    )
     del user_answers[user_id]
-
 
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
 
+    # Если пользователь сейчас проходит опрос
     if user_id in user_answers and user_answers[user_id].get("waiting_for_text"):
         ua = user_answers[user_id]
         ua["answers"].append(update.message.text)
@@ -220,10 +223,17 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finish_quiz(update, context, user_id)
         return
 
+    # Проверка, допущен ли к AI
     if user_id not in allowed_chat:
         await update.message.reply_text("Сперва пройдите опрос: отправьте /start")
         return
 
+    # Проверка лимита
+    if ai_usage.get(user_id, 0) >= 6:
+        await update.message.reply_text("Вы исчерпали лимит бесплатных сообщений (6). Свяжитесь с администратором для увеличения лимита.")
+        return
+
+    # Отправляем запрос к DeepSeek
     await update.message.chat.send_action("typing")
     try:
         resp = await asyncio.get_event_loop().run_in_executor(None, lambda: openai.ChatCompletion.create(
@@ -233,16 +243,20 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             temperature=0.7,
         ))
         answer = resp.choices[0].message.content.strip()
+        # Увеличиваем счётчик
+        ai_usage[user_id] = ai_usage.get(user_id, 0) + 1
+        # Можно добавить уведомление об остатке
+        remaining = 6 - ai_usage[user_id]
+        answer += f"\n\n_Осталось сообщений: {remaining}_"
     except Exception as e:
         logger.exception("DeepSeek request failed: %s", e)
         answer = "Ошибка при обращении к ИИ. Попробуйте позже."
-    await update.message.reply_text(answer)
 
+    await update.message.reply_text(answer)
 
 async def get_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await update.message.reply_text(f"Ваш chat_id: {user.id}")
-
 
 async def get_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
@@ -255,8 +269,22 @@ async def get_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Failed to send DB")
         await update.message.reply_text("Не удалось отправить базу данных.")
 
+# ---------- Flask для поддержания порта ----------
+flask_app = Flask(__name__)
 
-# ---------- Точка входа ----------
+@flask_app.route('/')
+def index():
+    return "Bot is running (polling mode) with AI limit (6 messages).", 200
+
+@flask_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    flask_app.run(host='0.0.0.0', port=port)
+
+# ---------- Основная функция ----------
 def main():
     init_db()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -267,9 +295,12 @@ def main():
     application.add_handler(CallbackQueryHandler(quiz_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_handler))
 
-    logger.info("Бот запущен в режиме polling...")
-    application.run_polling()
+    # Запускаем Flask в отдельном потоке, чтобы Render видел открытый порт
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
+    logger.info("Бот запущен в режиме polling с лимитом AI 6 сообщений.")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
