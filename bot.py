@@ -266,9 +266,20 @@ app = Flask(__name__)
 
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
+    """Обработчик входящих обновлений от Telegram."""
+    # Логируем факт получения запроса
+    logger.info("Получен POST-запрос на webhook")
     if telegram_app:
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        telegram_app.process_update(update)
+        try:
+            update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+            telegram_app.process_update(update)
+            logger.info("Обновление обработано")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке обновления: {e}")
+            return 'error', 500
+    else:
+        logger.error("telegram_app не инициализирован")
+        return 'service not ready', 503
     return 'ok', 200
 
 
