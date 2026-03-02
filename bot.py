@@ -407,17 +407,21 @@ def main():
     telegram_app = application
 
     # Устанавливаем webhook
-    render_url = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+    # Render автоматически задаёт переменную RENDER_EXTERNAL_URL с полным URL сервиса
+    render_url = os.environ.get('RENDER_EXTERNAL_URL')
     if render_url:
-        webhook_url = f"https://{render_url}/{BOT_TOKEN}"
+        webhook_url = f"{render_url}/{BOT_TOKEN}"
     else:
-        # Для локального тестирования можно использовать ngrok
-        webhook_url = f"https://ваш-домен/{BOT_TOKEN}"  # замените при локальном тестировании
-        logger.warning("RENDER_EXTERNAL_HOSTNAME не задан, используется заглушка")
+    # Fallback для локальной разработки (можно использовать ngrok)
+        webhook_url = f"https://ваш-домен/{BOT_TOKEN}"
+        logger.warning("RENDER_EXTERNAL_URL не задан, используется заглушка")
 
-    application.bot.set_webhook(url=webhook_url)
-    logger.info(f"Webhook установлен на {webhook_url}")
-
+    try:
+        application.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook установлен на {webhook_url}")
+    except Exception as e:
+        logger.error(f"Ошибка установки webhook: {e}")
+        
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
