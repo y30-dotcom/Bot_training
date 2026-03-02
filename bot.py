@@ -2,7 +2,6 @@ import os
 import sqlite3
 import logging
 import asyncio
-import threading
 from datetime import datetime
 from flask import Flask, request
 
@@ -26,13 +25,12 @@ print("BOT_TOKEN из env:", os.getenv("BOT_TOKEN"))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ваш Telegram ID
-EXCEL_PATH = os.getenv("EXCEL_PATH", "teen_portfolio.xlsx")  # укажите правильное имя файла
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+EXCEL_PATH = os.getenv("EXCEL_PATH", "teen_portfolio.xlsx")
 DB_PATH = os.getenv("DB_PATH", "responses.db")
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN environment variable is required")
-
 if not OPENAI_API_KEY:
     raise SystemExit("OPENAI_API_KEY environment variable is required")
 
@@ -43,49 +41,22 @@ openai.api_base = "https://api.deepseek.com"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== НОВЫЕ ВОПРОСЫ ==========
+# Вопросы
 QUESTIONS = [
-    {
-        "type": "options",
-        "text": "Сколько лет вашему ребёнку?",
-        "options": ["7–8", "9–10", "11–12", "13–14", "15+"]
-    },
-    {
-        "type": "options",
-        "text": "Как часто ребёнок пользуется компьютером или планшетом?",
-        "options": ["Почти каждый день", "Пару раз в неделю", "Почти никогда"]
-    },
-    {
-        "type": "text",
-        "text": "С какими программами уже знаком? (перечислите через запятую, например: Scratch, Minecraft, Excel. Если не знаком, напишите «не знаком»)"
-    },
-    {
-        "type": "options",
-        "text": "Рисует, монтирует видео, создаёт что-то своё?",
-        "options": ["Да", "Нет", "Хочет научиться"]
-    },
-    {
-        "type": "options",
-        "text": "Как лучше заниматься?",
-        "options": ["В группе", "Индивидуально", "Не знаю"]
-    },
-    {
-        "type": "text",
-        "text": "Как зовут ребёнка? (напишите имя)"
-    },
-    {
-        "type": "text",
-        "text": "Ваш номер телефона для связи (в любом формате)"
-    }
+    {"type": "options", "text": "Сколько лет вашему ребёнку?",
+     "options": ["7–8", "9–10", "11–12", "13–14", "15+"]},
+    {"type": "options", "text": "Как часто ребёнок пользуется компьютером или планшетом?",
+     "options": ["Почти каждый день", "Пару раз в неделю", "Почти никогда"]},
+    {"type": "text", "text": "С какими программами уже знаком? (перечислите через запятую, например: Scratch, Minecraft, Excel. Если не знаком, напишите «не знаком»)"},
+    {"type": "options", "text": "Рисует, монтирует видео, создаёт что-то своё?",
+     "options": ["Да", "Нет", "Хочет научиться"]},
+    {"type": "options", "text": "Как лучше заниматься?",
+     "options": ["В группе", "Индивидуально", "Не знаю"]},
+    {"type": "text", "text": "Как зовут ребёнка? (напишите имя)"},
+    {"type": "text", "text": "Ваш номер телефона для связи (в любом формате)"}
 ]
 
-# Хранилище данных пользователя:
-# user_answers[user_id] = {
-#     "user": объект User,
-#     "answers": список ответов (по порядку вопросов),
-#     "step": текущий шаг (0-индекс),
-#     "waiting_for_text": True/False (ожидание текстового ответа)
-# }
+# Хранилище данных пользователя
 user_answers = {}
 allowed_chat = set()
 
@@ -94,10 +65,8 @@ telegram_app = None
 
 
 def init_db():
-    """Создаёт таблицу для хранения ответов (если её нет)."""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS responses (
             id INTEGER PRIMARY KEY,
             timestamp TEXT,
@@ -113,33 +82,26 @@ def init_db():
             child_name TEXT,
             phone TEXT
         )
-        """
-    )
+    """)
     conn.commit()
     conn.close()
 
 
 async def save_response_row(row):
-    """Сохраняет ответы в БД (выполняется в отдельном потоке)."""
     def _insert(r):
         conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            """
+        conn.execute("""
             INSERT INTO responses (
                 timestamp, user_id, username, first_name, last_name,
                 age, frequency, software, creative, format, child_name, phone
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            r
-        )
+        """, r)
         conn.commit()
         conn.close()
-
     await asyncio.get_event_loop().run_in_executor(None, _insert, tuple(row))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start."""
     await update.message.reply_text(
         "Привет! Мы проведём небольшой опрос, чтобы лучше узнать вашего ребёнка.\n"
         "Нажмите кнопку ниже, чтобы начать."
@@ -149,38 +111,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки во время квиза."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
     if query.data == "quiz_start":
-        # Начинаем новый квиз: сбрасываем состояние
-        user_answers[user_id] = {
-            "user": query.from_user,
-            "answers": [],
-            "step": 0,
-            "waiting_for_text": False
-        }
+        user_answers[user_id] = {"user": query.from_user, "answers": [], "step": 0, "waiting_for_text": False}
         await send_question(query, context, user_id)
         return
 
-    # Если нажата опция (например, "q0_1")
     if query.data.startswith("q"):
         parts = query.data.split("_")
-        step = int(parts[0][1:])          # номер вопроса
-        choice = int(parts[1])            # индекс выбранного варианта
+        step = int(parts[0][1:])
+        choice = int(parts[1])
         ua = user_answers.get(user_id)
         if not ua:
             await query.edit_message_text("Опрос не найден. Отправьте /start чтобы начать снова.")
             return
-
-        # Сохраняем ответ (текст выбранной опции)
         ua["answers"].append(QUESTIONS[step]["options"][choice])
         ua["step"] = step + 1
         ua["waiting_for_text"] = False
-
-        # Переходим к следующему вопросу или завершаем
         if ua["step"] < len(QUESTIONS):
             await send_question(query, context, user_id)
         else:
@@ -188,7 +138,6 @@ async def quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_question(query, context, user_id):
-    """Отправляет текущий вопрос пользователю."""
     ua = user_answers.get(user_id)
     if not ua:
         return
@@ -196,38 +145,28 @@ async def send_question(query, context, user_id):
     q = QUESTIONS[step]
 
     if q["type"] == "options":
-        # Вопрос с кнопками
-        buttons = [
-            InlineKeyboardButton(opt, callback_data=f"q{step}_{i}")
-            for i, opt in enumerate(q["options"])
-        ]
-        keyboard = [[b] for b in buttons]  # каждый вариант с новой строки
+        buttons = [InlineKeyboardButton(opt, callback_data=f"q{step}_{i}") for i, opt in enumerate(q["options"])]
+        keyboard = [[b] for b in buttons]
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = q["text"]
-        # Если это первый запрос после старта, используем edit_message_text,
-        # иначе отправляем новое сообщение
         if isinstance(query, Update) and query.callback_query:
             await query.callback_query.edit_message_text(text, reply_markup=reply_markup)
         else:
             await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
     else:
-        # Текстовый вопрос (свободный ввод)
         text = q["text"]
         if isinstance(query, Update) and query.callback_query:
             await query.callback_query.edit_message_text(text)
         else:
             await context.bot.send_message(chat_id=user_id, text=text)
-        # Устанавливаем флаг, что ждём текстовый ответ
         ua["waiting_for_text"] = True
 
 
 async def finish_quiz(query, context, user_id):
-    """Завершает квиз: сохраняет данные, отправляет файл и включает AI-чат."""
     ua = user_answers[user_id]
     user = ua["user"]
-    answers = ua["answers"]  # список из 7 ответов
+    answers = ua["answers"]
 
-    # Формируем строку для БД
     row = [
         datetime.utcnow().isoformat(),
         user.id,
@@ -247,20 +186,11 @@ async def finish_quiz(query, context, user_id):
     except Exception:
         logger.exception("Failed to save response to DB")
 
-    # Уведомление администратору
     admin_text = (
         f"✅ Новый ответ от пользователя:\n"
-        f"ID: {user.id}\n"
-        f"Username: @{user.username if user.username else ''}\n"
-        f"Name: {user.first_name or ''} {user.last_name or ''}\n"
-        f"Ответы:\n"
-        f"1. Возраст: {answers[0]}\n"
-        f"2. Частота: {answers[1]}\n"
-        f"3. Программы: {answers[2]}\n"
-        f"4. Творчество: {answers[3]}\n"
-        f"5. Формат: {answers[4]}\n"
-        f"6. Имя ребёнка: {answers[5]}\n"
-        f"7. Телефон: {answers[6]}"
+        f"ID: {user.id}\nUsername: @{user.username or ''}\nName: {user.first_name or ''} {user.last_name or ''}\n"
+        f"Ответы:\n1. Возраст: {answers[0]}\n2. Частота: {answers[1]}\n3. Программы: {answers[2]}\n"
+        f"4. Творчество: {answers[3]}\n5. Формат: {answers[4]}\n6. Имя ребёнка: {answers[5]}\n7. Телефон: {answers[6]}"
     )
     if ADMIN_CHAT_ID:
         try:
@@ -268,71 +198,41 @@ async def finish_quiz(query, context, user_id):
         except Exception as e:
             logger.exception("Failed to send admin message: %s", e)
 
-    # Отправляем Excel-файл пользователю
     if os.path.exists(EXCEL_PATH):
-        try:
-            with open(EXCEL_PATH, "rb") as f:
-                await context.bot.send_document(
-                    chat_id=user.id,
-                    document=f,
-                    filename=os.path.basename(EXCEL_PATH)
-                )
-        except Exception as e:
-            logger.exception("Failed to send Excel to user: %s", e)
-            await context.bot.send_message(
-                chat_id=user.id,
-                text="Не удалось отправить файл. Свяжитесь с администратором."
-            )
+        with open(EXCEL_PATH, "rb") as f:
+            await context.bot.send_document(chat_id=user.id, document=f, filename=os.path.basename(EXCEL_PATH))
     else:
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=f"Подарочный файл не найден на сервере (ожидался: {EXCEL_PATH})."
-        )
+        await context.bot.send_message(chat_id=user.id, text=f"Подарочный файл не найден на сервере (ожидался: {EXCEL_PATH}).")
 
-    # Разрешаем AI-чат
     allowed_chat.add(user.id)
-    await context.bot.send_message(
-        chat_id=user.id,
-        text="Спасибо! Теперь вы можете общаться с ИИ — просто напишите сообщение."
-    )
-
-    # Очищаем временные данные
+    await context.bot.send_message(chat_id=user.id, text="Спасибо! Теперь вы можете общаться с ИИ — просто напишите сообщение.")
     del user_answers[user_id]
 
 
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения (после квиза или во время ожидания ввода)."""
     user = update.effective_user
     user_id = user.id
 
-    # Если пользователь сейчас проходит квиз и ожидает текстовый ответ
     if user_id in user_answers and user_answers[user_id].get("waiting_for_text"):
         ua = user_answers[user_id]
-        text = update.message.text
-        # Сохраняем ответ
-        ua["answers"].append(text)
+        ua["answers"].append(update.message.text)
         ua["step"] += 1
         ua["waiting_for_text"] = False
-
-        # Переходим к следующему вопросу или завершаем
         if ua["step"] < len(QUESTIONS):
             await send_question(update, context, user_id)
         else:
             await finish_quiz(update, context, user_id)
         return
 
-    # Если квиз не пройден и не ожидаем ввода — просим пройти квиз
     if user_id not in allowed_chat:
         await update.message.reply_text("Сперва пройдите опрос: отправьте /start")
         return
 
-    # Обычный AI-чат
-    prompt = update.message.text
     await update.message.chat.send_action("typing")
     try:
         resp = await asyncio.get_event_loop().run_in_executor(None, lambda: openai.ChatCompletion.create(
             model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": update.message.text}],
             max_tokens=500,
             temperature=0.7,
         ))
@@ -340,19 +240,15 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.exception("DeepSeek request failed: %s", e)
         answer = "Ошибка при обращении к ИИ. Попробуйте позже."
-
     await update.message.reply_text(answer)
 
 
 async def get_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для получения своего Telegram ID."""
     user = update.effective_user
-    await update.message.reply_text(f"Ваш chat_id: {user.id}\n"
-                                     f"Отправьте этот ID администратору для получения личных уведомлений.")
+    await update.message.reply_text(f"Ваш chat_id: {user.id}")
 
 
 async def get_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для администратора: скачать базу данных."""
     if str(update.effective_user.id) != ADMIN_CHAT_ID:
         await update.message.reply_text("Доступ запрещён.")
         return
@@ -364,13 +260,12 @@ async def get_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Не удалось отправить базу данных.")
 
 
-# ---------- Flask для webhook ----------
-app = Flask(__name__)  # ВАЖНО: именно app, не flask_app!
+# ---------- Flask-приложение (для Gunicorn) ----------
+app = Flask(__name__)
 
 
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
-    """Обработчик входящих обновлений от Telegram."""
     if telegram_app:
         update = Update.de_json(request.get_json(force=True), telegram_app.bot)
         telegram_app.process_update(update)
@@ -382,56 +277,36 @@ def index():
     return 'Bot is running!', 200
 
 
-def run_flask():
-    """Запускает Flask-сервер на указанном порту."""
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
-
-
-# ---------- Основная функция ----------
-def main():
+# ---------- Инициализация Telegram приложения ----------
+def setup_telegram():
     global telegram_app
-
     init_db()
-
-    # Создаём приложение Telegram
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("get_my_id", get_my_id))
     application.add_handler(CommandHandler("get_db", get_db))
     application.add_handler(CallbackQueryHandler(quiz_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_handler))
-
     telegram_app = application
 
-    # Устанавливаем webhook
-    # Render автоматически задаёт переменную RENDER_EXTERNAL_URL с полным URL сервиса
+    # Определяем URL для webhook
     render_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if not render_url:
+        hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+        if hostname:
+            render_url = f"https://{hostname}"
     if render_url:
         webhook_url = f"{render_url}/{BOT_TOKEN}"
     else:
-    # Fallback для локальной разработки (можно использовать ngrok)
-        webhook_url = f"https://ваш-домен/{BOT_TOKEN}"
-        logger.warning("RENDER_EXTERNAL_URL не задан, используется заглушка")
+        webhook_url = f"https://ваш-домен/{BOT_TOKEN}"  # для локальной отладки
+        logger.warning("RENDER_EXTERNAL_URL и RENDER_EXTERNAL_HOSTNAME не заданы, используется заглушка")
 
     try:
         application.bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook установлен на {webhook_url}")
     except Exception as e:
         logger.error(f"Ошибка установки webhook: {e}")
-        
-    # Запускаем Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Бесконечный цикл, чтобы программа не завершалась
-    while True:
-        import time
-        time.sleep(60)
 
 
-if __name__ == "__main__":
-    main()
+# Запускаем инициализацию при старте приложения (один раз)
+setup_telegram()
