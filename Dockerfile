@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 10000
 
 # Команда для запуска приложения
-CMD gunicorn bot:app
+CMD python bot.py
