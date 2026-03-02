@@ -1,13 +1,5 @@
-<<<<<<< HEAD
 python-telegram-bot==20.7
 openai==0.28.0
 python-dotenv==1.0.0
 flask==3.0.0
 gunicorn==21.2.0
-=======
-python-telegram-bot==20.7
-openai==0.28.0
-python-dotenv==1.0.0
-flask==3.0.0
-gunicorn==21.2.0
->>>>>>> 6621c230dc9078557739c834c8083e3e68d4f4a4
